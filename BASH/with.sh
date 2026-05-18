@@ -33,5 +33,22 @@ task1() {
     echo -e "\e[0m"
     sleep $s
 }
+task2() {
+    local s=5
+    echo -e "\e[31m"
+    echo -e "task: ${FUNCNAME[0]} sleep: $s"
+    for arg in "$@"; do
+        echo "$arg"
+    done
+    echo -e "\e[0m"
+    sleep $s
+}
 
-Run task1 a b c 
+# Run task1 a b c 
+
+
+commands=( "task1 a b c" "task2 x y z")
+
+for cmd in "${commands[@]}"; do
+    Run ${cmd}
+done

@@ -5,7 +5,7 @@ set -euo pipefail
 declare -a _CLEANUP_STACK=()
 declare -i _CLEANUP_RUNNING=0
 
-push_cleanup() {
+_push_cleanup() {
     _CLEANUP_STACK+=("$*")
 }
 
@@ -33,7 +33,7 @@ with() {
     "$ctx_fn" __setup__
 
     # Register teardown on the cleanup stack so signals also trigger it
-    push_cleanup "$ctx_fn __teardown__"
+    _push_cleanup "$ctx_fn __teardown__"
 
     if [[ $# -gt 0 ]]; then
         "$@"

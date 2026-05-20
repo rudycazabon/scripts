@@ -59,7 +59,7 @@ _log_emit() {
     if [[ "$LOG_SHOW_CALLER" == "true" ]]; then
         local frame=1
         while [[ "${FUNCNAME[$frame]:-}" =~ ^(_log|log_|run_|ctx_logger|with)$ ]]; do
-            (( frame++ ))
+            (( ++frame ))
         done
         caller_info=" ${BASH_SOURCE[$frame]##*/}:${BASH_LINENO[$((frame-1))]}"
     fi
@@ -118,7 +118,7 @@ _log_block() {
     (( LOG_CAPTURE_TRIM > 0 && total > LOG_CAPTURE_TRIM )) && trimmed=true
 
     while IFS= read -r line; do
-        (( line_no++ ))
+        (( ++line_no ))
         (( LOG_CAPTURE_TRIM > 0 && line_no > LOG_CAPTURE_TRIM )) && break
 
         local tag="${stream_label}[$(printf '%3d' $line_no)]"
@@ -242,21 +242,24 @@ _log_init
 # demo — requires contextmanager.sh patterns above to be defined
 # =============================================================================
 
-# ── cleanup stack + with() (from contextmanager.sh) ──────────────────────────
+# ── cleanup stack (LIFO, signal-safe) ────────────────────────────────────────
 declare -a _CLEANUP_STACK=()
 declare -i _CLEANUP_RUNNING=0
 
-_push_cleanup() { _CLEANUP_STACK+=("$*"); }
+_push_cleanup() {
+    _CLEANUP_STACK+=("$*")
+}
 
 _run_cleanups() {
     [[ $_CLEANUP_RUNNING -eq 1 ]] && return
     _CLEANUP_RUNNING=1
     local i
-    for (( i=${#_CLEANUP_STACK[@]}-1; i>=0; i-- )); do 
+    for (( i=${#_CLEANUP_STACK[@]}-1; i>=0; i-- )); do
         eval "${_CLEANUP_STACK[$i]}" || true
     done
 }
-trap '_run_cleanups'                          EXIT
+
+trap '_run_cleanups' EXIT
 trap '_run_cleanups; trap - INT;  kill -INT  $$' INT
 trap '_run_cleanups; trap - TERM; kill -TERM $$' TERM
 trap '_run_cleanups; trap - HUP;  kill -HUP  $$' HUP
@@ -287,6 +290,7 @@ with() {
     fi
     # No body supplied — caller manages scope manually
 }
+
 # ── context: managed temp directory ──────────────────────────────────────────
 ctx_tempdir() {
     case "$1" in
@@ -317,7 +321,6 @@ ctx_lockfile() {
             echo "[ctx:lockfile  ] released: $lock" ;;
     esac
 }
-
 # ── context: elapsed timer ────────────────────────────────────────────────────
 ctx_timer() {
     case "$1" in
@@ -330,7 +333,6 @@ ctx_timer() {
             echo "[ctx:timer     ] elapsed : ${ms}ms" ;;
     esac
 }
-
 # ── context: scoped ENV override ─────────────────────────────────────────────
 ctx_env() {
     case "$1" in
@@ -345,7 +347,28 @@ ctx_env() {
     esac
 }
 
+
 # ── demo workloads ────────────────────────────────────────────────────────────
+# ── workload ──────────────────────────────────────────────────────────────────
+do_work() {
+    echo
+    echo "[work] APP_ENV   = ${APP_ENV:-unset}"
+    echo "[work] LOG_LEVEL = ${LOG_LEVEL:-unset}"
+    echo "[work] writing to $TEMPDIR/output.txt"
+    echo "context manager demo — $(date -Iseconds)" > "$TEMPDIR/output.txt"
+    cat "$TEMPDIR/output.txt"
+    sleep 0.15
+    echo "[work] complete"
+    echo
+}
+
+# ── simulate an abort to prove trap fires ────────────────────────────────────
+do_work_then_abort() {
+    do_work
+    echo "[work] simulating unexpected failure..."
+    kill -INT $$          # sends SIGINT to self — cleanups must still fire
+}
+
 task_normal() {
     log_info "running normal commands"
     run --level INFO --label "list /etc/hosts" -- cat /etc/hosts
@@ -396,14 +419,10 @@ log_info "═══════════════════════�
 log_info " logger.sh demo"
 log_info "═══════════════════════════════════════════════════"
 
-with ctx_logger -- task_normal
-echo
-with ctx_logger -- task_mixed_streams
-echo
-with ctx_logger -- task_failing
-echo
-with ctx_logger -- task_pipeline
-echo
+with ctx_logger -- task_normal; echo
+with ctx_logger -- task_mixed_streams; echo
+with ctx_logger -- task_failing; echo
+with ctx_logger -- task_pipeline; echo
 
 log_info "nested scopes:"
 with ctx_logger -- with ctx_logger -- _inner_task

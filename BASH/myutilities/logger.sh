@@ -228,7 +228,7 @@ ctx_logger() {
     case "$1" in
         __setup__)
             log_info "┌─ entering scope (depth=$((_LOG_SCOPE+1)))"
-            (( _LOG_SCOPE++ )) || true ;;
+            (( ++_LOG_SCOPE )) || true ;;
         __teardown__)
             (( _LOG_SCOPE-- )) || true
             log_info "└─ exiting scope (depth=${_LOG_SCOPE})" ;;

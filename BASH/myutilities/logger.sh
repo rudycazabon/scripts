@@ -350,24 +350,24 @@ ctx_env() {
 
 # ── demo workloads ────────────────────────────────────────────────────────────
 # ── workload ──────────────────────────────────────────────────────────────────
-do_work() {
-    echo
-    echo "[work] APP_ENV   = ${APP_ENV:-unset}"
-    echo "[work] LOG_LEVEL = ${LOG_LEVEL:-unset}"
-    echo "[work] writing to $TEMPDIR/output.txt"
-    echo "context manager demo — $(date -Iseconds)" > "$TEMPDIR/output.txt"
-    cat "$TEMPDIR/output.txt"
-    sleep 0.15
-    echo "[work] complete"
-    echo
-}
+# do_work() {
+#     echo
+#     echo "[work] APP_ENV   = ${APP_ENV:-unset}"
+#     echo "[work] LOG_LEVEL = ${LOG_LEVEL:-unset}"
+#     echo "[work] writing to $TEMPDIR/output.txt"
+#     echo "context manager demo — $(date -Iseconds)" > "$TEMPDIR/output.txt"
+#     cat "$TEMPDIR/output.txt"
+#     sleep 0.15
+#     echo "[work] complete"
+#     echo
+# }
 
 # ── simulate an abort to prove trap fires ────────────────────────────────────
-do_work_then_abort() {
-    do_work
-    echo "[work] simulating unexpected failure..."
-    kill -INT $$          # sends SIGINT to self — cleanups must still fire
-}
+# do_work_then_abort() {
+#     do_work
+#     echo "[work] simulating unexpected failure..."
+#     kill -INT $$          # sends SIGINT to self — cleanups must still fire
+# }
 
 task_normal() {
     log_info "running normal commands"
@@ -415,16 +415,16 @@ _inner_task() {
 }
 
 # ── main demo ─────────────────────────────────────────────────────────────────
-log_info "═══════════════════════════════════════════════════"
-log_info " logger.sh demo"
-log_info "═══════════════════════════════════════════════════"
-
-with ctx_logger -- task_normal; echo
-with ctx_logger -- task_mixed_streams; echo
-with ctx_logger -- task_failing; echo
-with ctx_logger -- task_pipeline; echo
-
-log_info "nested scopes:"
-with ctx_logger -- with ctx_logger -- _inner_task
-
-log_info "all demos complete — log written to: $LOG_FILE"
+# log_info "═══════════════════════════════════════════════════"
+# log_info " logger.sh demo"
+# log_info "═══════════════════════════════════════════════════"
+# 
+# with ctx_logger -- task_normal; echo
+# with ctx_logger -- task_mixed_streams; echo
+# with ctx_logger -- task_failing; echo
+# with ctx_logger -- task_pipeline; echo
+# 
+# log_info "nested scopes:"
+# with ctx_logger -- with ctx_logger -- _inner_task
+# 
+# log_info "all demos complete — log written to: $LOG_FILE"

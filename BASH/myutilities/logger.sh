@@ -48,7 +48,7 @@ _log_emit() {
 
     # level gate
     local lvl_num="${_LOG_LEVELS[$level]:-2}"
-    local cfg_num="${_LOG_LEVELS[$LOG_LEVEL]:-2}"
+    local cfg_num="${_LOG_LEVELS[$LOG_LEVEL:-INFO]:-2}"
     (( lvl_num < cfg_num )) && return 0
 
     # timestamp
@@ -95,43 +95,47 @@ _log_emit() {
 }
 
 # emit a continuation block (captured output lines)
+# ── capture block renderer — fixed for set -e ─────────────────────────────────
 _log_block() {
     local level="$1"; shift
-    local stream_label="$1"; shift   # STDOUT / STDERR
+    local stream_label="$1"; shift
     local content="$1";      shift
 
-    [[ -z "$content" ]] && return
+    [[ -z "$content" ]] && return 0
 
     local lvl_num="${_LOG_LEVELS[$level]:-2}"
-    local cfg_num="${_LOG_LEVELS[$LOG_LEVEL]:-2}"
+    local cfg_num="${_LOG_LEVELS[$LOG_LEVEL:-INFO]:-2}"
     (( lvl_num < cfg_num )) && return 0
 
     local ts; ts="$(date '+%Y-%m-%dT%H:%M:%S%z')"
-    local indent; indent="$(printf '%*s' $(( (_LOG_SCOPE+1) * 2 )) '')"
+    local indent; indent="$(printf '%*s' $(( (_LOG_SCOPE + 1) * 2 )) '')"
 
     local label_color
     [[ "$stream_label" == "STDOUT" ]] && label_color="$_C_LABEL" || label_color="$_C_ELABEL"
 
-    local -i line_no=0 total
-    total=$(echo "$content" | wc -l)
-    local trimmed=false
-    (( LOG_CAPTURE_TRIM > 0 && total > LOG_CAPTURE_TRIM )) && trimmed=true
+    local line_no=0    # plain integer — avoids -i arithmetic pitfalls
+    local total; total="$(echo "$content" | wc -l)"
 
     while IFS= read -r line; do
-        (( ++line_no ))
+        (( ++line_no ))   # <-- pre-increment: evaluates to ≥1, always exit status 0
+
+        # trim guard: (( expr )) is safe here because it's in an && list
         (( LOG_CAPTURE_TRIM > 0 && line_no > LOG_CAPTURE_TRIM )) && break
 
-        local tag="${stream_label}[$(printf '%3d' $line_no)]"
+        local tag; tag="${stream_label}[$(printf '%3d' "$line_no")]"
 
         if [[ "$LOG_COLOR" == "true" ]]; then
-            echo -e "$(_ansi "$_C_META")${ts}$_C_RESET $(_ansi "$label_color")${_C_BOLD}[${tag}]$_C_RESET ${indent}${line}" >&2
+            echo -e "$(_ansi "$_C_META")${ts}${_C_RESET} $(_ansi "$label_color")${_C_BOLD}[${tag}]${_C_RESET} ${indent}${line}" >&2
         else
             echo "${ts} [${tag}] ${indent}${line}" >&2
         fi
+
         [[ -n "$LOG_FILE" ]] && echo "[${ts}] [${tag}] ${indent}${line}" >> "$LOG_FILE"
+
     done <<< "$content"
 
-    if [[ "$trimmed" == "true" ]]; then
+    # omission notice — guard omitted-count arithmetic the same way
+    if (( LOG_CAPTURE_TRIM > 0 && total > LOG_CAPTURE_TRIM )); then
         local omitted=$(( total - LOG_CAPTURE_TRIM ))
         _log_emit "$level" "↳ … ${omitted} more lines omitted (LOG_CAPTURE_TRIM=${LOG_CAPTURE_TRIM})"
     fi
@@ -228,7 +232,7 @@ ctx_logger() {
     case "$1" in
         __setup__)
             log_info "┌─ entering scope (depth=$((_LOG_SCOPE+1)))"
-            (( ++_LOG_SCOPE )) || true ;;
+            (( _LOG_SCOPE++ )) || true ;;
         __teardown__)
             (( _LOG_SCOPE-- )) || true
             log_info "└─ exiting scope (depth=${_LOG_SCOPE})" ;;
@@ -242,27 +246,41 @@ _log_init
 # demo — requires contextmanager.sh patterns above to be defined
 # =============================================================================
 
-# ── cleanup stack (LIFO, signal-safe) ────────────────────────────────────────
+# ── cleanup stack + with() (from contextmanager.sh) ──────────────────────────
 declare -a _CLEANUP_STACK=()
 declare -i _CLEANUP_RUNNING=0
+declare     _CLEANUP_SOURCE="NORMAL"   # ← tracks what triggered cleanup
 
-_push_cleanup() {
-    _CLEANUP_STACK+=("$*")
-}
+
+_push_cleanup() { _CLEANUP_STACK+=("$*"); }
 
 _run_cleanups() {
     [[ $_CLEANUP_RUNNING -eq 1 ]] && return
     _CLEANUP_RUNNING=1
+
+    # Only announce when a signal or unexpected EXIT actually fires live entries
+    local live=0
     local i
+    for (( i=0; i<${#_CLEANUP_STACK[@]}; i++ )); do
+        [[ "${_CLEANUP_STACK[$i]}" != "true" ]] && (( ++live ))
+    done
+
+    if (( live > 0 )); then
+        _log_emit "ERROR" "⚡ cleanup triggered by ${_CLEANUP_SOURCE} — ${live} live context(s) to unwind"
+    fi
+
     for (( i=${#_CLEANUP_STACK[@]}-1; i>=0; i-- )); do
+        if [[ "${_CLEANUP_STACK[$i]}" != "true" ]]; then
+            _log_emit "WARN" "  ↳ [trap] unwinding: ${_CLEANUP_STACK[$i]}"
+        fi
         eval "${_CLEANUP_STACK[$i]}" || true
     done
 }
 
-trap '_run_cleanups' EXIT
-trap '_run_cleanups; trap - INT;  kill -INT  $$' INT
-trap '_run_cleanups; trap - TERM; kill -TERM $$' TERM
-trap '_run_cleanups; trap - HUP;  kill -HUP  $$' HUP
+trap '_CLEANUP_SOURCE="EXIT"   _run_cleanups'                                   EXIT
+trap '_CLEANUP_SOURCE="SIGINT" _run_cleanups; trap - INT;  kill -INT  $$'       INT
+trap '_CLEANUP_SOURCE="SIGTERM" _run_cleanups; trap - TERM; kill -TERM $$'      TERM
+trap '_CLEANUP_SOURCE="SIGHUP"  _run_cleanups; trap - HUP;  kill -HUP  $$'     HUP
 
 # ── with() dispatcher ─────────────────────────────────────────────────────────
 # Usage: with <ctx_fn> [-- <body_fn> [args...]]
@@ -272,35 +290,27 @@ with() {
     [[ "${1:-}" == "--" ]] && shift
 
     "$ctx_fn" __setup__
-
-    # Register teardown on the cleanup stack so signals also trigger it
     _push_cleanup "$ctx_fn __teardown__"
+    local my_idx=$(( ${#_CLEANUP_STACK[@]} - 1 ))  # capture MY index before nested calls shift it
 
     if [[ $# -gt 0 ]]; then
         "$@"
-        local exit_code=$?
-
-        # Explicit teardown when body exits normally — pops logical scope.
-        # _run_cleanups on EXIT will skip already-cleared entries.
+        local rc=$?
         "$ctx_fn" __teardown__
-        # Neutralise the stack entry so it doesn't double-fire
-        _CLEANUP_STACK[${#_CLEANUP_STACK[@]}-1]="true"
-
-        return $exit_code
+        _CLEANUP_STACK[$my_idx]="true"              # neutralise MY slot, not whatever is last
+        return $rc
     fi
-    # No body supplied — caller manages scope manually
 }
-
 # ── context: managed temp directory ──────────────────────────────────────────
 ctx_tempdir() {
     case "$1" in
         __setup__)
             TEMPDIR=$(mktemp -d)
             export TEMPDIR
-            echo "[ctx:tempdir   ] created : $TEMPDIR" ;;
+            log_info "[ctx:tempdir   ] created : $TEMPDIR" ;;
         __teardown__)
             rm -rf "$TEMPDIR"
-            echo "[ctx:tempdir   ] removed : $TEMPDIR" ;;
+            log_info "[ctx:tempdir   ] removed : $TEMPDIR" ;;
     esac
 }
 
@@ -311,120 +321,45 @@ ctx_lockfile() {
         __setup__)
             exec 9>"$lock"
             if ! flock -n 9; then
-                echo "[ctx:lockfile  ] ERROR: failed to acquire lock — $lock" >&2
+                log_error "[ctx:lockfile  ] ERROR: failed to acquire lock — $lock" >&2
                 exit 1
             fi
-            echo "[ctx:lockfile  ] acquired: $lock" ;;
+            log_info "[ctx:lockfile  ] acquired: $lock" ;;
         __teardown__)
             flock -u 9
             rm -f "$lock"
-            echo "[ctx:lockfile  ] released: $lock" ;;
+            log_info "[ctx:lockfile  ] released: $lock" ;;
     esac
 }
+
 # ── context: elapsed timer ────────────────────────────────────────────────────
 ctx_timer() {
     case "$1" in
         __setup__)
             _TIMER_START=$(date +%s%N)
-            echo "[ctx:timer     ] started" ;;
+            log_info "[ctx:timer     ] started" ;;
         __teardown__)
             local end; end=$(date +%s%N)
             local ms=$(( (end - _TIMER_START) / 1000000 ))
-            echo "[ctx:timer     ] elapsed : ${ms}ms" ;;
+            log_info "[ctx:timer     ] elapsed : ${ms}ms" ;;
     esac
 }
+
 # ── context: scoped ENV override ─────────────────────────────────────────────
 ctx_env() {
     case "$1" in
         __setup__)
-            _SAVED_ENV=$(env | sort)
+            # Save only vars we will override — never touch logger internals
+            _SAVED_APP_ENV="${APP_ENV:-}"
+            _SAVED_LOG_LEVEL_ENV="${LOG_LEVEL:-}"   # save but DO NOT restore LOG_LEVEL
+                                                     # — it belongs to the logger
             export APP_ENV="staging"
-            export LOG_LEVEL="debug"
-            echo "[ctx:env       ] overrides applied (APP_ENV=staging LOG_LEVEL=debug)" ;;
+            # Use a separate app-level var, not LOG_LEVEL
+            export APP_LOG_LEVEL="debug"
+            log_info "[ctx:env       ] overrides applied (APP_ENV=staging APP_LOG_LEVEL=debug)" ;;
         __teardown__)
-            unset APP_ENV LOG_LEVEL
-            echo "[ctx:env       ] overrides cleared" ;;
+            [[ -n "$_SAVED_APP_ENV" ]] && export APP_ENV="$_SAVED_APP_ENV" || unset APP_ENV
+            unset APP_LOG_LEVEL
+            log_info "[ctx:env       ] overrides cleared" ;;
     esac
 }
-
-
-# ── demo workloads ────────────────────────────────────────────────────────────
-# ── workload ──────────────────────────────────────────────────────────────────
-# do_work() {
-#     echo
-#     echo "[work] APP_ENV   = ${APP_ENV:-unset}"
-#     echo "[work] LOG_LEVEL = ${LOG_LEVEL:-unset}"
-#     echo "[work] writing to $TEMPDIR/output.txt"
-#     echo "context manager demo — $(date -Iseconds)" > "$TEMPDIR/output.txt"
-#     cat "$TEMPDIR/output.txt"
-#     sleep 0.15
-#     echo "[work] complete"
-#     echo
-# }
-
-# ── simulate an abort to prove trap fires ────────────────────────────────────
-# do_work_then_abort() {
-#     do_work
-#     echo "[work] simulating unexpected failure..."
-#     kill -INT $$          # sends SIGINT to self — cleanups must still fire
-# }
-
-task_normal() {
-    log_info "running normal commands"
-    run --level INFO --label "list /etc/hosts" -- cat /etc/hosts
-    run --level DEBUG                           -- echo "simple echo"
-    run --level WARN  --label "disk usage"      -- df -h /
-}
-
-task_mixed_streams() {
-    log_info "command that writes to both stdout and stderr"
-    # writes a mix intentionally
-    run --level INFO --label "mixed output script" -- bash -c '
-        echo "line 1 to stdout"
-        echo "warning to stderr" >&2
-        echo "line 2 to stdout"
-        echo "another stderr msg" >&2
-        echo "final stdout line"
-    '
-}
-
-task_failing() {
-    log_warn "running a command expected to fail — error is captured, not fatal"
-    run --level WARN --label "intentional failure" -- bash -c 'echo "before fail"; ls /nonexistent 2>&1; exit 42' || true
-}
-
-task_pipeline() {
-    log_info "pipeline capture demo"
-    run_pipe --label "find + count bash files" -- \
-        "find /etc -maxdepth 1 -name '*.conf' 2>/dev/null | head -5 | wc -l"
-}
-
-task_nested_scope() {
-    log_info "outer task begins"
-    with ctx_logger -- bash -c '
-        source "'"$0"'" 2>/dev/null || true   # re-source not needed — functions inherited
-    ' || true
-    # call inner directly since we are in-process
-    _inner_task
-}
-
-_inner_task() {
-    log_debug "inner task — inside nested logger scope"
-    run --level DEBUG --label "hostname" -- hostname
-    log_debug "inner task done"
-}
-
-# ── main demo ─────────────────────────────────────────────────────────────────
-# log_info "═══════════════════════════════════════════════════"
-# log_info " logger.sh demo"
-# log_info "═══════════════════════════════════════════════════"
-# 
-# with ctx_logger -- task_normal; echo
-# with ctx_logger -- task_mixed_streams; echo
-# with ctx_logger -- task_failing; echo
-# with ctx_logger -- task_pipeline; echo
-# 
-# log_info "nested scopes:"
-# with ctx_logger -- with ctx_logger -- _inner_task
-# 
-# log_info "all demos complete — log written to: $LOG_FILE"

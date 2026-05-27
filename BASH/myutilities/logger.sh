@@ -313,6 +313,19 @@ ctx_tempdir() {
             log_info "[ctx:tempdir   ] removed : $TEMPDIR" ;;
     esac
 }
+# ── context: managed current working directory ──────────────────────────────────────────
+ctx_cwd() {
+    case "$1" in
+        __setup__)
+            CURDIR=$(pwd)
+            export CURDIR
+            cd "$2"
+            log_info "[ctx:cwd   ] changed to : $CURDIR" ;;
+        __teardown__)
+            cd $CURDIR
+            log_info "[ctx:cwd   ] pop back to : $CURDIR" ;;
+    esac
+}
 
 # ── context: exclusive lock file ─────────────────────────────────────────────
 ctx_lockfile() {

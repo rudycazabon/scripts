@@ -29,16 +29,24 @@ do_work_then_abort_with_run() {
     run --level WARN --label "intentional failure" -- bash -c 'echo "before fail"; ls /nonexistent 2>&1; exit 42' || true
 }
 
-#
-#echo "═══════════════════════════════════════════"
-#echo " Demo 1: normal exit — all contexts unwind"
-#echo "═══════════════════════════════════════════"
-#with ctx_logger -- \
-#with ctx_timer -- \
-#with ctx_env   -- \
-#with ctx_tempdir -- \
-#with ctx_lockfile -- \
-#    do_work
+do_check_what_dir_this_is() {
+    log_info "[work] this directory is: $(pwd)"
+}
+
+
+echo "═══════════════════════════════════════════"
+echo " Demo 1: normal exit — all contexts unwind"
+echo "═══════════════════════════════════════════"
+with ctx_logger -- \
+with ctx_timer -- \
+with ctx_env   -- \
+with ctx_tempdir -- \
+with ctx_lockfile -- \
+    do_work
+# Reset stack between demos
+_CLEANUP_STACK=()
+_CLEANUP_RUNNING=0
+
 
 echo
 echo "========== do_work_then_abort_with_run"
@@ -60,3 +68,7 @@ with ctx_logger -- \
 with ctx_env -- \
 with ctx_timer -- \
     do_work_then_abort_with_kill
+
+echo '========== testing cur_cwd'
+with ctx_logger -- \
+with ctx_cwd -- \

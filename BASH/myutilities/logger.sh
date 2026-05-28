@@ -226,6 +226,12 @@ run_pipe() {
 
     return $rc
 }
+# ── reset stack between ctx runs ──────────────
+# Reset stack between 
+cleanup() {
+    _CLEANUP_STACK=()
+    _CLEANUP_RUNNING=0
+}
 
 # ── ctx_logger — scoped logging context (integrates with with()) ──────────────
 ctx_logger() {
@@ -313,18 +319,65 @@ ctx_tempdir() {
             log_info "[ctx:tempdir   ] removed : $TEMPDIR" ;;
     esac
 }
-# ── context: managed current working directory ──────────────────────────────────────────
+# ── ctx_cwd — change into a specified directory, return on teardown ───────────
+# Requires: CTX_CWD_DIR set before calling with ctx_cwd
 ctx_cwd() {
     case "$1" in
         __setup__)
-            CURDIR=$(pwd)
-            export CURDIR
-            cd "$2"
-            log_info "[ctx:cwd   ] changed to : $CURDIR" ;;
+            # Validate
+            if [[ -z "${CTX_CWD_DIR:-}" ]]; then
+                log_fatal "ctx_cwd: CTX_CWD_DIR is not set"
+            fi
+            if [[ ! -d "$CTX_CWD_DIR" ]]; then
+                log_fatal "ctx_cwd: directory does not exist: $CTX_CWD_DIR"
+            fi
+
+            # Capture origin before moving
+            _CTX_CWD_ORIGIN="$(pwd)"
+            export _CTX_CWD_ORIGIN
+
+            cd "$CTX_CWD_DIR"
+            log_debug "ctx_cwd: cd $CTX_CWD_DIR (was $_CTX_CWD_ORIGIN)" ;;
+
         __teardown__)
-            cd $CURDIR
-            log_info "[ctx:cwd   ] pop back to : $CURDIR" ;;
+            cd "$_CTX_CWD_ORIGIN"
+            log_debug "ctx_cwd: returned to $_CTX_CWD_ORIGIN"
+            unset _CTX_CWD_ORIGIN CTX_CWD_DIR ;;
     esac
+}
+# ── make_ctx_cwd — returns a uniquely named context function ─────────────────
+# Usage: make_ctx_cwd <directory>
+# Sets: CWD_CTX (name of the generated function, pass to with())
+make_ctx_cwd() {
+    local target_dir="$1"
+    local fn_name="_ctx_cwd_$(tr -dc 'a-z0-9' < /dev/urandom | head -c 6)"
+
+    eval "
+${fn_name}() {
+    local target=\"${target_dir}\"
+    local origin_var=\"_CWDCTX_ORIGIN_${fn_name}\"
+
+    case \"\$1\" in
+        __setup__)
+            if [[ ! -d \"\$target\" ]]; then
+                log_fatal \"ctx_cwd: directory does not exist: \$target\"
+            fi
+            printf -v \"\$origin_var\" '%s' \"\$(pwd)\"
+            export \"\$origin_var\"
+            cd \"\$target\"
+            log_debug \"ctx_cwd [\${fn_name}]: cd \$target (was \${!origin_var})\" ;;
+
+        __teardown__)
+            local origin=\"\${!origin_var}\"
+            cd \"\$origin\"
+            log_debug \"ctx_cwd [${fn_name}]: returned to \$origin\"
+            unset \"\$origin_var\" ;;
+    esac
+}
+"
+    # Export name so caller can pass it to with()
+    CWD_CTX="$fn_name"
+    export CWD_CTX
 }
 
 # ── context: exclusive lock file ─────────────────────────────────────────────
